@@ -1,0 +1,46 @@
+PATH
+  remote: .
+  specs:
+    raindrops (0.20.2)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    console (1.34.3)
+      fiber-annotation
+      fiber-local (~> 1.1)
+      json
+    fiber-annotation (0.2.0)
+    fiber-local (1.1.0)
+      fiber-storage
+    fiber-storage (1.0.1)
+    io-metrics (0.3.0)
+      console (~> 1.8)
+      json (~> 2)
+    json (2.19.5)
+    power_assert (3.0.1)
+    test-unit (3.7.7)
+      power_assert
+
+PLATFORMS
+  arm64-darwin-24
+  ruby
+
+DEPENDENCIES
+  io-metrics (>= 0.3.0)
+  raindrops!
+  test-unit (~> 3.0)
+
+CHECKSUMS
+  console (1.34.3) sha256=869fbd74697efc4c606f102d2812b0b008e4e7fd738a91c591e8577140ec0dcc
+  fiber-annotation (0.2.0) sha256=7abfadf1d119f508867d4103bf231c0354d019cc39a5738945dec2edadaf6c03
+  fiber-local (1.1.0) sha256=c885f94f210fb9b05737de65d511136ea602e00c5105953748aa0f8793489f06
+  fiber-storage (1.0.1) sha256=f48e5b6d8b0be96dac486332b55cee82240057065dc761c1ea692b2e719240e1
+  io-metrics (0.3.0) sha256=96f8b35c8a2c998a71f4bdaab186d7ae647f04bd8041fb942c0799e62b905573
+  json (2.19.5) sha256=218a18553e4801d579ca7e0f5bc72bafd776d7397238a1fb4e74db5b0a812c59
+  power_assert (3.0.1) sha256=8ce9876716cc74e863fcd4cdcdc52d792bd983598d1af3447083a3a9a4d34103
+  raindrops (0.20.2)
+  test-unit (3.7.7) sha256=3c89d5ff0690a16bef9946156c4624390402b9d54dfcf4ce9cbd5b06bead1e45
+
+BUNDLED WITH
+  4.0.6

@@ -6,6 +6,7 @@ TEST_FILES = %w[
   test/test_linux.rb
   test/test_tcp_info.rb
   test/test_inet_diag_socket.rb
+  test/test_linux_io_metrics_comparison.rb
 ].freeze
 
 namespace :test do

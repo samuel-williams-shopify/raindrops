@@ -1,0 +1,55 @@
+name: Test
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Ruby ${{ matrix.ruby }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby:
+          - "3.4"
+          - "4.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: false   # we install manually to use our Gemfile
+
+      - name: Install gems
+        run: bundle install
+
+      - name: Build C extension
+        run: |
+          cd ext/raindrops
+          ruby extconf.rb
+          make
+
+      - name: Run standard tests
+        run: |
+          bundle exec ruby -I ext/raindrops -I lib -I test \
+            -e '
+              require "test-unit"
+              require "./test/test_raindrops.rb"
+              require "./test/test_struct.rb"
+              require "./test/test_linux.rb"
+              require "./test/test_tcp_info.rb"
+              require "./test/test_inet_diag_socket.rb"
+            '
+
+      - name: Run io-metrics comparison tests
+        run: |
+          bundle exec ruby -I ext/raindrops -I lib -I test \
+            -e '
+              require "test-unit"
+              require "./test/test_linux_io_metrics_comparison.rb"
+            '
