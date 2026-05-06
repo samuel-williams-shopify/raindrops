@@ -47,9 +47,4 @@ jobs:
             '
 
       - name: Run io-metrics comparison tests
-        run: |
-          bundle exec ruby -I ext/raindrops -I lib -I test \
-            -e '
-              require "test-unit"
-              require "./test/test_linux_io_metrics_comparison.rb"
-            '
+        run: bundle exec ruby -I ext/raindrops -I lib test/test_linux_io_metrics_comparison.rb

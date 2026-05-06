@@ -28,6 +28,7 @@
 
 require 'test/unit'
 require 'socket'
+require 'raindrops'
 require 'io/metrics'
 $stderr.sync = $stdout.sync = true
 
@@ -46,8 +47,6 @@ unless IO::Metrics::Listener.supported?
   puts "Skipping #{__FILE__}: io-metrics /proc/net/tcp not available"
   return
 end
-
-require 'raindrops'
 
 class TestLinuxIoMetricsComparison < Test::Unit::TestCase
 
