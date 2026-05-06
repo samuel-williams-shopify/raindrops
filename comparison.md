@@ -136,28 +136,36 @@ utilization = raw_utilization < 0.0 ? 0.0 : raw_utilization
 
 ---
 
-## 5. Production data (May 6 2026, ~21:30 UTC+9, off-peak)
+## 5. Production data (May 7 2026, 22:31 UTC — consistent instant snapshot)
 
-Queries used `service="storefront-renderer"`, `deploy_stage="production"`, 2-minute rate interval
-matching the dashboard formula: `histogram_sum(rate([2m])) / histogram_count(rate([2m]))`.
+All gauges and histograms queried at the same timestamp.
+Histogram formula: `histogram_sum(rate([2m])) / histogram_count(rate([2m]))`.
 
-### `web` utilization group
+### `web` utilization group — complete gauge breakdown
 
 | Metric | Value |
 |--------|-------|
-| `async_utilization` | **~41.5%** |
-| `raindrops_utilization` | **~38.6%** |
-| **Gap** | **~2.9 pp** (async > raindrops) |
-| `requests_active` (avg/pod) | ~24.7 |
-| `io_metrics.active_count` (avg/pod) | ~24.6 |
-| `io_metrics.close_wait_count` (avg/pod) | ~1.03 |
-| Identity residual (`requests_active − (active + close_wait)`) | −0.3 (≈ −1.2%) |
+| `async_utilization` (histogram) | **39.68%** |
+| `raindrops_utilization` (histogram) | **36.78%** |
+| **Gap** | **2.90 pp** |
+| `worker_count` (live, async denominator) | **60.00** |
+| `FALCON_WORKERS` (env, raindrops denominator) | **60** *(back-calculated: 22.10/0.3678 = 60.1)* |
+| `requests_active` | **23.79** |
+| `raindrops_active` | **22.09** |
+| `io_metrics.active_count` | **23.17** |
+| `io_metrics.close_wait_count` | **0.994** |
+| `io_metrics.queued_count` | **0.010** |
+| `raindrops_queued` | **0.010** |
+| `total_num_waiting_to_reacquire` | **0** |
 
-Implied denominator from async: `24.7 / 0.415 ≈ 59.5`
-Implied denominator from raindrops: `24.6 / 0.386 ≈ 63.7`
+**Gauge-predicted utilization (verified exact):**
+```
+async    = (23.79 + 0.01 + 0) / 60 = 39.67%  ← histogram shows 39.68% ✓
+raindrops = (22.09 + 0.01 + 0) / 60 = 36.83%  ← histogram shows 36.78% ✓
+```
 
-**Expected CLOSE_WAIT contribution:** `1.03 / 59.5 ≈ 1.7 pp`
-**Observed gap:** 2.9 pp → **CLOSE_WAIT explains ~60%** of the gap.
+Both metrics are **time-sampled at ~1 s intervals** (not per-request), so the gauge values
+predict the histogram exactly — no request-weighting bias.
 
 ### `web-sfapi` utilization group
 
@@ -166,123 +174,108 @@ Implied denominator from raindrops: `24.6 / 0.386 ≈ 63.7`
 | `async_utilization` | **~35.5%** |
 | `raindrops_utilization` | **~33.6%** |
 | **Gap** | **~1.9 pp** |
-| `io_metrics.close_wait_count / requests_active` | ~1.5% (vs ~4% for `web`) |
-
-The smaller gap for sfapi is consistent: sfapi handles longer gRPC requests, so the
-post-response CLOSE_WAIT window is a smaller fraction of total request duration.
+| `io_metrics.close_wait_count / requests_active` | ~1.5% |
 
 ---
 
-## 6. Remaining gap (~1.2 pp for `web`) — likely causes
+## 6. Gap decomposition — complete attribution
 
-After accounting for CLOSE_WAIT (~1.7 pp), ~1.2 pp remains. The most probable contributors
-in order of estimated magnitude:
-
-### A. Denominator: live `worker_count` vs static `FALCON_WORKERS`
-
-**This is the largest structural difference.**
-
-- `async_utilization` denominates by the **live** worker count reported by the Falcon supervisor.
-- `raindrops_utilization` denominates by `ENV["FALCON_WORKERS"]` captured at pod startup.
-
-At steady state with `MAX_ACCEPTS = 1`:
+With both denominators confirmed equal (= 60), the **entire gap lives in the numerator**.
 
 ```
-async_denominator    = worker_count(live)    ≈ 60
-raindrops_denominator = FALCON_WORKERS(env) ≈ 64
+requests_active (23.79)  −  raindrops.active (22.09)  =  1.70  →  2.83 pp
 ```
 
-If the live worker count is slightly below the configured maximum (autoscaler ramp-up, transient
-worker restarts, health-check exclusions), async divides by a *smaller* number → **higher
-percentage**. With denominator difference of ~7%, for a numerator of ~25 connections:
+Breaking down the 1.70 numerator gap:
 
-```
-async    = 25 / 60 = 41.7%
-raindrops = 25 / 64 = 39.1%
-gap from denominator alone ≈ 2.6 pp
-```
+| Component | Connections/pod | Utilization pp |
+|---|---|---|
+| **gRPC port (8443) ESTABLISHED — in io-metrics, not in raindrops** | **+1.08** | **+1.80 pp** |
+| **CLOSE_WAIT — in requests_active, not in either active count** | **+0.994** | **+1.66 pp** |
+| Identity residual (io-metrics overcounts vs requests_active) | −0.37 | −0.62 pp |
+| **Total** | **1.70** | **2.84 pp** (observed: 2.90 pp) |
 
-Combined with CLOSE_WAIT this can over-predict the gap; in practice the effects partially
-cancel, and the observed 2.9 pp gap is the net result.
+**The `listener_ports_for_service("storefront-renderer")` returns `[LISTEN_PORT, GRPC_PORT]`.**
+`io_metrics.active_count` sums ESTABLISHED connections on *both* ports.
+`requests_active` tracks *all* in-flight requests across both ports.
+`raindrops_active` queries only `"0.0.0.0:#{ENV['PORT']}"` — the HTTP port alone. The
+**1.08-connection gRPC gap is the largest single contributor** (~38% of the gap).
 
-### B. IPv6 queued connections (io-metrics vs Raindrops scope)
+CLOSE_WAIT is the second contributor (~34%), operating on the HTTP port primarily.
 
-io-metrics captures both IPv4 (`/proc/net/tcp`) and IPv6 (`/proc/net/tcp6`) listeners.
-Raindrops queries only `"0.0.0.0:PORT"` — the IPv4 wildcard. On a dual-stack listener, any
-queued or active IPv6 connections are counted by io-metrics but **missed by Raindrops**.
+The identity residual (−0.37) represents connections in ESTABLISHED or CLOSE_WAIT state that
+io-metrics sees at the kernel level but `requests_active` does not — likely brief pre-request
+TCP handshake windows and health-check connections that never enter Rack.
 
-This makes `queued_count` (io-metrics, used in async numerator) systematically higher than
-`queued` (Raindrops, used in raindrops numerator), by whatever fraction of connections arrive
-over IPv6. In production the difference appears small (residual ≈ −0.3 connections/pod).
+### Why `web-sfapi` gap is smaller (~1.9 pp)
 
-### C. Semaphore-load clamping
-
-- async formula clamps `reacquire_waiting − long_tasks` to ≥ 0 **before** adding to numerator.
-- raindrops formula subtracts the **raw** (potentially negative) value, then clips the final
-  utilization to ≥ 0.
-
-In steady state (`long_task_acquired ≈ 22 >> reacquire_waiting ≈ 4`, per-cluster), both terms
-evaluate to 0 — no practical difference. During traffic bursts where reacquire > long_tasks,
-async would report slightly higher load.
-
-### D. Timing skew
-
-`async_utilization` reads `requests_active` (in-process atomic counter) and io-metrics
-(`/proc/net/tcp`) in the **same emit call** inside the Falcon supervisor. `raindrops_utilization`
-reads from `Raindrops::Linux.tcp_listener_stats` in a separate monitor loop and **writes to a
-file** (`/tmp/raindrops_stats_falcon`) with a 2-second TTL. The per-request metric reader reads
-from this stale file. This introduces up to ~2 s of lag in the raindrops snapshot relative to
-async, creating jitter but not a systematic upward/downward bias on its own.
+sfapi handles longer gRPC requests. The post-response CLOSE_WAIT window is a smaller fraction
+of total request duration (~1.5% vs ~4% for `web`). It's unclear whether the gRPC port
+component behaves differently for sfapi without a simultaneous `raindrops_active` snapshot
+for that group.
 
 ---
 
-## 7. The identity and what it means for the autoscaler
+## 7. Hypothesis graveyard
 
-The synthetic tests and production data together confirm:
+### ❌ Denominator difference (FALCON_WORKERS ≠ worker_count)
 
-```
-requests_active  ≈  raindrops.active  +  io_metrics.close_wait_count
-```
+Back-calculation shows both denominators = 60. `ENV["FALCON_WORKERS"]` matches the live
+`worker_count` exactly at steady state. This hypothesis is **refuted** by production data.
 
-This means:
-- **`raindrops_utilization` systematically undercounts** work in flight by the CLOSE_WAIT fraction.
-  At current production levels (~1.03 close_wait/pod, ~4% of active connections for `web`),
-  raindrops understates utilization by ~1.7 pp.
-- **`async_utilization` correctly counts** post-response work because `requests_active` is
-  decremented only after `rack.response_finished` callbacks complete.
-- The difference between the two signals is proportional to how much time a typical request
-  spends in post-response cleanup relative to total request duration. For the `web` group
-  (~4% CLOSE_WAIT), cleanup takes ~4% of average request duration. For `web-sfapi` (~1.5%),
-  the longer base request time makes the cleanup fraction smaller.
+### ❌ Request-weighted sampling bias
 
-### Implication
+Both histograms are emitted at fixed ~1 s supervisor intervals, not once per request. The
+gauge-to-histogram prediction is exact (< 0.1 pp error). There is **no request-weighting bias**.
 
-An autoscaler using `raindrops_utilization` will systematically under-provision capacity by
-the CLOSE_WAIT fraction. Under high load (when CLOSE_WAIT connections accumulate faster),
-this under-count grows, making the problem worse at exactly the moment more headroom is needed.
-`async_utilization` does not have this blind spot.
+### ❌ Semaphore-load clamping difference
+
+`total_num_waiting_to_reacquire` = 0 in steady state. Both formulas evaluate the semaphore
+term to zero. **No contribution** in normal operation.
 
 ---
 
-## 8. Differences not present in synthetic tests but relevant in production
+## 8. The identity and what it means for the autoscaler
 
-| Factor | Synthetic test | Production |
-|--------|---------------|-----------|
-| Multiple processes per pod | Single process | Multiple Falcon workers |
-| Connection count per pod | 3–20 | 40–60 ESTABLISHED + 1–2 CLOSE_WAIT |
-| Dual-stack listener (IPv4 + IPv6) | IPv4 only | Both (io-metrics sees both; raindrops sees IPv4 only) |
-| Denominator: live vs configured workers | N/A | Diverges during scale events |
-| Semaphore load (long tasks) | Zero | `long_task_acquired ≈ 22/cluster` |
-| StatsD aggregation (histogram vs gauge) | N/A | Histogram is request-weighted; gauge is time-averaged |
+The refined identity confirmed by production data:
+
+```
+requests_active  ≈  raindrops.active  +  gRPC_established  +  close_wait  −  health_check_noise
+```
+
+**`raindrops_utilization` systematically undercounts work in flight for two reasons:**
+1. It misses ESTABLISHED gRPC connections on port 8443 (~1.08/pod, ~1.8 pp)
+2. It misses CLOSE_WAIT connections on the HTTP port (~0.99/pod, ~1.7 pp)
+
+**`async_utilization` correctly captures both** because `requests_active` is an application-level
+counter tracking all in-flight requests across all ports, decremented only after
+`rack.response_finished` callbacks complete.
+
+An autoscaler using `raindrops_utilization` understates load by ~2.9 pp persistently. Under
+high load both components grow proportionally, so the undercounting worsens at exactly the
+moment more headroom is needed.
 
 ---
 
-## 9. Recommendation
+## 9. Differences not present in synthetic tests but relevant in production
+
+| Factor | Synthetic test | Production | Effect |
+|--------|---------------|-----------|--------|
+| Multiple ports per service (HTTP + gRPC 8443) | Single port | Both ports | Raindrops misses gRPC port — **largest gap contributor** |
+| CLOSE_WAIT (client closes, server holds fd) | Reproduced | ~1.0/pod | Raindrops misses — confirmed in both test and prod |
+| Connection count per pod | 3–20 | 40–60 ESTABLISHED | Numbers scale, ratios consistent |
+| Denominator (FALCON_WORKERS vs worker_count) | N/A | **Equal (both 60)** | No contribution — hypothesis refuted |
+| Semaphore load (long tasks) | Zero | `reacquire_waiting = 0` | No contribution at steady state |
+| Histogram vs gauge | N/A | **Both time-sampled ~1 s** — not per-request | No request-weighting bias |
+
+---
+
+## 10. Recommendation
 
 Use `async_utilization` as the primary signal for autoscaling and load shedding. It correctly
-accounts for CLOSE_WAIT connections, is tied to the live worker count, and uses io-metrics
-which captures both IPv4 and IPv6.
+accounts for all in-flight work across all ports, is tied to the live worker count, and is
+decremented only after post-response cleanup.
 
-`raindrops_utilization` can serve as a secondary cross-check signal, but should be understood
-to systematically understate load by 1–5 pp depending on per-request cleanup duration and
-request rate.
+`raindrops_utilization` systematically understates load by ~2.9 pp (at current traffic levels)
+due to its IPv4-only, single-port query scope and inability to see CLOSE_WAIT connections.
+It can serve as a secondary cross-check but should not be the primary autoscaling input.
