@@ -186,33 +186,43 @@ With both denominators confirmed equal (= 60), the **entire gap lives in the num
 requests_active (23.79)  −  raindrops.active (22.09)  =  1.70  →  2.83 pp
 ```
 
-Breaking down the 1.70 numerator gap:
+### Cross-group comparison (web vs web-sfapi)
 
-| Component | Connections/pod | Utilization pp |
+| Metric | `web` | `web-sfapi` |
 |---|---|---|
-| **gRPC port (8443) ESTABLISHED — in io-metrics, not in raindrops** | **+1.08** | **+1.80 pp** |
-| **CLOSE_WAIT — in requests_active, not in either active count** | **+0.994** | **+1.66 pp** |
-| Identity residual (io-metrics overcounts vs requests_active) | −0.37 | −0.62 pp |
-| **Total** | **1.70** | **2.84 pp** (observed: 2.90 pp) |
+| `requests_active` | 23.79 | 21.04 |
+| `raindrops_active` | 22.09 | 20.37 |
+| `io_metrics.active_count` | 23.17 | 21.49 |
+| `worker_count` | 60 | 60 |
+| **`active_count − raindrops.active`** | **1.08** | **1.12** |
 
-**The `listener_ports_for_service("storefront-renderer")` returns `[LISTEN_PORT, GRPC_PORT]`.**
-`io_metrics.active_count` sums ESTABLISHED connections on *both* ports.
-`requests_active` tracks *all* in-flight requests across both ports.
-`raindrops_active` queries only `"0.0.0.0:#{ENV['PORT']}"` — the HTTP port alone. The
-**1.08-connection gRPC gap is the largest single contributor** (~38% of the gap).
+`active_count − raindrops.active` is **identical across both groups** (~1.1/pod), even though
+`web-sfapi` carries the Storefront API gRPC traffic. If this delta were from actual gRPC API
+requests, sfapi would show a substantially larger gap. The ~1.1 is a **constant per-pod
+background** — almost certainly Kubernetes liveness/readiness probes and/or service mesh sidecar
+connections on port 8443, present equally on every pod regardless of workload type.
 
-CLOSE_WAIT is the second contributor (~34%), operating on the HTTP port primarily.
+For `web-sfapi`, `requests_active` (21.04) is *below* `active_count` (21.49), confirming these
+port-8443 connections are largely idle: ESTABLISHED in the kernel but not processing any requests.
 
-The identity residual (−0.37) represents connections in ESTABLISHED or CLOSE_WAIT state that
-io-metrics sees at the kernel level but `requests_active` does not — likely brief pre-request
-TCP handshake windows and health-check connections that never enter Rack.
+### Numerator gap breakdown
+
+| Component | Connections/pod | Utilization pp | Evidence |
+|---|---|---|---|
+| **CLOSE_WAIT** — counted in `requests_active`, invisible to Raindrops | **+0.994** | **+1.66 pp** | Confirmed by synthetic tests and io-metrics `close_wait_count` |
+| **Port-8443 background** — health checks/service mesh ESTABLISHED in `active_count`, partially in `requests_active` | net **+0.706** | **+1.18 pp** | Inferred: constant across groups; ~0.37/pod idle (not in `requests_active`) |
+| **Total** | **1.70** | **2.84 pp** | observed: 2.90 pp |
+
+**CLOSE_WAIT is the primary and better-understood contributor** (~59% of net gap).
+The port-8443 background (~41%) is real but reflects infrastructure connections rather than
+application load.
 
 ### Why `web-sfapi` gap is smaller (~1.9 pp)
 
-sfapi handles longer gRPC requests. The post-response CLOSE_WAIT window is a smaller fraction
-of total request duration (~1.5% vs ~4% for `web`). It's unclear whether the gRPC port
-component behaves differently for sfapi without a simultaneous `raindrops_active` snapshot
-for that group.
+The CLOSE_WAIT contribution is smaller for sfapi (~1.5% of requests vs ~4% for `web`) because
+sfapi handles longer requests — the post-response cleanup window is a smaller fraction of total
+request duration. The port-8443 background is similar per-pod, but sfapi has fewer HTTP
+CLOSE_WAIT connections to amplify it.
 
 ---
 
